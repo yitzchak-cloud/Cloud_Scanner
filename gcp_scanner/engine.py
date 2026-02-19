@@ -219,7 +219,7 @@ class ScanEngine:
         """ייצוא תוצאות"""
         output = {
             'project_id': self.project_id,
-            'scan_time': datetime.utcnow().isoformat(),
+            'scan_time': datetime.now(timezone.utc).isoformat(),
             'stats': {
                 'total_resources': self.stats['resource_types'].total(),
                 'resource_types': dict(self.stats['resource_types']),

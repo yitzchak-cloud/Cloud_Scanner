@@ -221,7 +221,7 @@ class ResourceReport:
     findings: List[Finding] = field(default_factory=list)
     raw_data: Dict[str, Any] = field(default_factory=dict)
     scanner_version: str = "2.0"
-    scan_time: datetime = field(default_factory=datetime.utcnow)
+    scan_time: datetime = field(default_factory=lambda:datetime.now(timezone.utc))
     
     def add_finding(self, finding: Finding):
         """הוספת ממצא"""

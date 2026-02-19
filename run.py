@@ -18,7 +18,7 @@ def setup_logging():
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(f'scan_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+            logging.FileHandler(f'log/scan_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
             logging.StreamHandler(sys.stdout)
         ]
     )
@@ -113,7 +113,7 @@ def main():
     print_summary(summary)
     
     # ייצוא תוצאות
-    output_file = f"gcp_scan_{project_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    output_file = f"export/gcp_scan_{project_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     engine.export_results(filepath=output_file)
     print(f"\n💾 Full results saved to: {output_file}")
     

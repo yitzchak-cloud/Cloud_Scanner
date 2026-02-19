@@ -171,24 +171,42 @@ class BaseScanner(ABC):
     
     def _create_metadata(self, asset: asset_v1.ResourceSearchResult) -> ResourceMetadata:
         """
-        יצירת מטדאטה בסיסי מהאסט
-        """
-        def convert_time(ts):
-            if not ts: return None
-            return datetime.fromtimestamp(ts.timestamp(), tz=timezone.utc)
+        יצירת מטדאטה מהאסט.
         
+        FIX: asset.create_time הוא DatetimeWithNanoseconds (לא protobuf Timestamp),
+        לכן convert_time חייב לטפל בשני המקרים.
+        """
+        def convert_time(ts: Any) -> Optional[datetime]:
+            if ts is None:
+                return None
+            # מקרה 1: protobuf Timestamp — יש .seconds
+            if hasattr(ts, 'seconds') and not isinstance(ts, datetime):
+                return datetime.fromtimestamp(ts.seconds, tz=timezone.utc)
+            # מקרה 2: DatetimeWithNanoseconds / datetime רגיל
+            if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    return ts.replace(tzinfo=timezone.utc)
+                return ts
+            # מקרה 3: string ISO
+            if isinstance(ts, str):
+                try:
+                    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                except ValueError:
+                    return None
+            return None
+
         return ResourceMetadata(
             resource_id=self._get_resource_id(asset),
             resource_type=asset.asset_type,
             project_id=self._extract_project_id(asset.project),
             name=asset.name.split('/')[-1],
-            display_name=asset.display_name,
-            location=asset.location,
+            display_name=asset.display_name or None,
+            location=asset.location or None,
             labels=dict(asset.labels) if asset.labels else {},
             creation_time=convert_time(asset.create_time),
             update_time=convert_time(asset.update_time),
             state=getattr(asset, 'state', None),
-            raw_data=asset_v1.ResourceSearchResult.to_dict(asset) if self.config['include_raw_data'] else {}
+            raw_data=asset_v1.ResourceSearchResult.to_dict(asset) if self.config.get('include_raw_data') else {}
         )
     
     def _get_resource_id(self, asset: asset_v1.ResourceSearchResult) -> str:
