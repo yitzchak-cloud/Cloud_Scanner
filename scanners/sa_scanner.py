@@ -1,13 +1,13 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
-import re
 
-from google.cloud import asset_v1, iam_v1, logging_v2
+from google.cloud import asset_v1, logging_v2
+from google.cloud import iam_admin_v1 as iam_v1
 import googleapiclient.discovery
 
-from .gcp_scanner.base_scanner import BaseScanner
-from .mixins import LoggingMixin, MonitoringMixin, IamMixin, ComplianceMixin
-from .gcp_scanner.models import (
+from gcp_scanner.base_scanner import BaseScanner
+from mixins import LoggingMixin, MonitoringMixin, IamMixin, ComplianceMixin
+from gcp_scanner.models import (
     ResourceReport, ResourceMetadata, Finding, Severity, 
     FindingType, AccessInfo, UsageInfo, SecurityInfo,
     HealthInfo, CostInfo, ComplianceInfo, RelationshipInfo,

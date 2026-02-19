@@ -8,7 +8,7 @@ from google.cloud import logging_v2, asset_v1, monitoring_v3, resourcemanager_v3
 from google.protobuf.timestamp_pb2 import Timestamp
 
 # ייבוא המודלים המקומיים
-from .gcp_scanner.models import Finding, Severity, FindingType, MetricValue
+from gcp_scanner.models import Finding, Severity, FindingType, MetricValue
 
 class LoggingMixin:
     """

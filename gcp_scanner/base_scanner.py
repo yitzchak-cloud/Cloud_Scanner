@@ -3,13 +3,12 @@ from typing import List, Dict, Any, Optional, Set, Type, Union, Callable
 from datetime import datetime, timedelta, timezone
 import logging
 from collections import Counter
-import importlib
 import inspect
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from google.cloud import asset_v1
 
-from .models import (
+from gcp_scanner.models import (
     ResourceReport, ResourceMetadata, Finding, Severity, 
     FindingType, AccessInfo, UsageInfo, SecurityInfo,
     HealthInfo, CostInfo, ComplianceInfo, RelationshipInfo,

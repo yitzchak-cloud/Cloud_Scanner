@@ -7,9 +7,9 @@ from collections import Counter
 
 from google.cloud import asset_v1
 
-from .base_scanner import BaseScanner
-from ..sa_scanner import ServiceAccountScanner
-from .models import ProjectSummary, Finding
+from gcp_scanner.base_scanner import BaseScanner
+from scanners.registry import get_default_scanner_classes
+from gcp_scanner.models import ProjectSummary, Finding
 
 class ScanEngine:
     """
@@ -40,11 +40,20 @@ class ScanEngine:
         
         # הרשמת סקנרים ברירת מחדל
         self._register_default_scanners()
-    
+
+
     def _register_default_scanners(self):
-        """הרשמת סקנרים ברירת מחדל"""
-        self.register_scanner(ServiceAccountScanner)
-        # נוסיף עוד בהמשך
+        """
+        טוען ורושם אוטומטית את כל הסורקים שהוגדרו ב-Registry
+        """
+        scanner_classes = get_default_scanner_classes()
+        
+        for scanner_class in scanner_classes:
+            try:
+                self.register_scanner(scanner_class)
+                self.logger.debug(f"Successfully registered {scanner_class.__name__} from registry")
+            except Exception as e:
+                self.logger.error(f"Failed to register scanner {scanner_class.__name__}: {e}")
     
     def register_scanner(self, scanner_class: Type[BaseScanner], config: Optional[Dict] = None):
         """הרשמת סקנר חדש"""

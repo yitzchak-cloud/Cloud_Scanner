@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any, Set, Union
 from enum import Enum
 from collections import Counter
-import json
+
 
 class Severity(Enum):
     """רמות חומרה"""
