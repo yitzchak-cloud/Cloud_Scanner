@@ -65,7 +65,7 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
     # ─── Analyzers ────────────────────────────────────────────────────
 
     def analyze_access(self, asset: asset_v1.ResourceSearchResult,
-                       metadata: ResourceMetadata) -> AccessInfo:
+                    metadata: ResourceMetadata) -> AccessInfo:
         email = _get_email(asset)
         access_info = AccessInfo()
         try:
