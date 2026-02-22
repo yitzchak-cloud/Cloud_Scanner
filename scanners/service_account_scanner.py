@@ -19,7 +19,17 @@ from gcp_scanner.models import (
 
 
 def _to_dict(obj: Any) -> Any:
-    """ממיר Struct/MapComposite/protobuf לאובייקט Python רגיל. בטוח גם על dict."""
+    """Recursively convert Protocol Buffer objects to native Python dictionaries.
+    
+    Handles conversion of Struct, MapComposite, and other protobuf types to
+    JSON-serializable Python objects for downstream processing.
+    
+    Args:
+        obj: Input object of any type, potentially containing protobuf structures
+        
+    Returns:
+        A pure Python representation with all nested protobufs converted to dicts/lists
+    """
     if isinstance(obj, Struct):
         return json_format.MessageToDict(obj)
     if hasattr(obj, 'items'):
@@ -30,7 +40,14 @@ def _to_dict(obj: Any) -> Any:
 
 
 def _get_email(asset: asset_v1.ResourceSearchResult) -> str:
-    """חילוץ email מ-SA asset בצורה בטוחה."""
+    """Extract the email address from a Service Account asset with null safety.
+    
+    Args:
+        asset: GCP asset search result containing a service account resource
+        
+    Returns:
+        The service account email address if present, empty string otherwise
+    """
     attrs = asset.additional_attributes
     if attrs is None:
         return ''
@@ -38,21 +55,40 @@ def _get_email(asset: asset_v1.ResourceSearchResult) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  ServiceAccountScanner — מטפל רק ב-ServiceAccount
+#  ServiceAccountScanner — GCP Service Account Analysis Scanner
 # ══════════════════════════════════════════════════════════════════════
 
 class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin, ComplianceMixin):
-    """סקנר ל-Service Accounts בלבד"""
+    """Scanner specialized in analyzing Google Cloud Platform Service Accounts.
+    
+    Performs comprehensive analysis of service accounts including access patterns,
+    security posture, usage metrics, health status, compliance, and relationships
+    with other resources. Inherits from BaseScanner and various capability mixins.
+    
+    Supported asset types:
+        - iam.googleapis.com/ServiceAccount
+    """
 
     SUPPORTED_TYPES = ['iam.googleapis.com/ServiceAccount']
 
     def __init__(self, project_id: str, config: Optional[Dict] = None):
+        """Initialize the ServiceAccountScanner with project context.
+        
+        Args:
+            project_id: GCP project identifier to scan
+            config: Optional configuration dictionary for scanner customization
+        """
         super().__init__(project_id, config)
         self._pending_findings: List[Finding] = []
         self._iam_policy_cache: Optional[Dict] = None
         self._setup_clients()
 
     def _setup_clients(self) -> None:
+        """Initialize and configure all required GCP API clients.
+        
+        Sets up clients for IAM, Cloud Resource Manager, logging, monitoring,
+        and compliance checks. Handles authentication via application default credentials.
+        """
         self.iam_client = iam_v1.IAMClient()
         self.cloudresourcemanager = googleapiclient.discovery.build('cloudresourcemanager', 'v3')
         self.setup_logging_client()
@@ -60,25 +96,40 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
         self.setup_iam_client()
 
     def can_handle(self, asset_type: str) -> bool:
+        """Determine if this scanner can process the given asset type.
+        
+        Args:
+            asset_type: GCP asset type string (e.g., 'iam.googleapis.com/ServiceAccount')
+            
+        Returns:
+            True if the asset type is supported by this scanner, False otherwise
+        """
         return asset_type in self.SUPPORTED_TYPES
 
-    # ─── Analyzers ────────────────────────────────────────────────────
+    # ─── Core Analyzers ────────────────────────────────────────────────────
 
     def analyze_access(self, asset: asset_v1.ResourceSearchResult,
-                    metadata: ResourceMetadata) -> AccessInfo:
+                       metadata: ResourceMetadata) -> AccessInfo:
+        """Analyze access controls and permissions for a service account.
+        
+        Examines IAM policies to determine who can impersonate or use the service account,
+        identifies public access patterns, and extracts role assignments.
+        
+        Args:
+            asset: The GCP asset representing the service account
+            metadata: Pre-extracted resource metadata for context
+            
+        Returns:
+            AccessInfo object containing principals, roles, and public access status
+        """
         email = _get_email(asset)
         access_info = AccessInfo()
         try:
             policy = self._get_project_iam_policy()
             member = f'serviceAccount:{email}'
-            # principals = מי שיש לו גישה ל-SA הזה (יכול להתחזות אליו)
-            # זה נשלף ממי שיש לו roles/iam.serviceAccountTokenCreator
-            # או roles/iam.serviceAccountUser על ה-SA הזה ספציפית
-            # ברמת project policy — ה-SA עצמו הוא ה-principal היחיד שמוגדר כאן
             for binding in policy.get('bindings', []):
                 if member in binding.get('members', []):
                     access_info.roles.append(binding['role'])
-            # principals = ה-SA עצמו — שכנים ב-binding הם לא principals שלו
             access_info.principals = [member]
             if 'allUsers' in access_info.principals or 'allAuthenticatedUsers' in access_info.principals:
                 access_info.is_public = True
@@ -92,6 +143,18 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
 
     def analyze_usage(self, asset: asset_v1.ResourceSearchResult,
                       metadata: ResourceMetadata) -> UsageInfo:
+        """Analyze usage patterns and metrics for a service account.
+        
+        Queries Cloud Logging for activity history, computes access frequencies,
+        identifies unique users, and retrieves relevant monitoring metrics.
+        
+        Args:
+            asset: The GCP asset representing the service account
+            metadata: Pre-extracted resource metadata for context
+            
+        Returns:
+            UsageInfo object with access patterns, operation counters, and metrics
+        """
         email = _get_email(asset)
         usage_info = UsageInfo()
         try:
@@ -146,6 +209,18 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
 
     def analyze_security(self, asset: asset_v1.ResourceSearchResult,
                          metadata: ResourceMetadata) -> SecurityInfo:
+        """Evaluate security posture of a service account.
+        
+        Analyzes IAM bindings for overly permissive roles, detects public exposure,
+        enumerates service account keys, and generates security findings.
+        
+        Args:
+            asset: The GCP asset representing the service account
+            metadata: Pre-extracted resource metadata for context
+            
+        Returns:
+            SecurityInfo object with IAM bindings, permission analysis, and findings
+        """
         email = _get_email(asset)
         security_info = SecurityInfo()
         try:
@@ -168,7 +243,7 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
             access_info = AccessInfo()
             for b in iam_bindings:
                 access_info.roles.append(b['role'])
-            access_info.principals = [member]  # ה-SA עצמו בלבד
+            access_info.principals = [member]
             access_info.is_public = security_info.has_public_access
             security_info.access_info = access_info
 
@@ -190,6 +265,18 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
 
     def analyze_health(self, asset: asset_v1.ResourceSearchResult,
                        metadata: ResourceMetadata) -> HealthInfo:
+        """Assess the health and operational status of a service account.
+        
+        Evaluates age, usage patterns, key expiration, and generates warnings
+        for unused accounts, expiring keys, and other operational concerns.
+        
+        Args:
+            asset: The GCP asset representing the service account
+            metadata: Pre-extracted resource metadata for context
+            
+        Returns:
+            HealthInfo object with status, warnings, errors, and health metrics
+        """
         email = _get_email(asset)
         health_info = HealthInfo(status='healthy')
         try:
@@ -266,6 +353,18 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
 
     def analyze_compliance(self, asset: asset_v1.ResourceSearchResult,
                            metadata: ResourceMetadata) -> ComplianceInfo:
+        """Evaluate compliance posture against industry standards.
+        
+        Checks the service account against common compliance frameworks
+        (HIPAA, PCI, SOC2) and identifies violations.
+        
+        Args:
+            asset: The GCP asset representing the service account
+            metadata: Pre-extracted resource metadata for context
+            
+        Returns:
+            ComplianceInfo object with standards status and violations
+        """
         compliance_info = ComplianceInfo()
         try:
             standards = ['hipaa', 'pci', 'soc2']
@@ -283,6 +382,18 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
 
     def analyze_relationships(self, asset: asset_v1.ResourceSearchResult,
                               metadata: ResourceMetadata) -> RelationshipInfo:
+        """Map resource relationships and dependencies.
+        
+        Identifies parent project, dependent resources that use this service account,
+        and associated resources like service account keys.
+        
+        Args:
+            asset: The GCP asset representing the service account
+            metadata: Pre-extracted resource metadata for context
+            
+        Returns:
+            RelationshipInfo object with parent, children, and dependents
+        """
         email = _get_email(asset)
         rel_info = RelationshipInfo()
         try:
@@ -294,20 +405,17 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
             self.logger.error(f"Error analyzing relationships for {email}: {e}")
         return rel_info
 
-    # ─── Helpers ──────────────────────────────────────────────────────
+    # ─── Helper Methods ──────────────────────────────────────────────────────
 
     def _get_project_iam_policy(self) -> Dict:
-        """
-        Retrieves the IAM policy for the specified Google Cloud project.
-
-        This method checks for a local cache before making an API call to 
-        Google Cloud Resource Manager. If an error occurs during the 
-        API request, it logs the error and returns a default empty policy.
-
+        """Retrieve the IAM policy for the current GCP project.
+        
+        Implements caching to avoid repeated API calls during a scan session.
+        Falls back to empty policy on API errors.
+        
         Returns:
-            Dict: A dictionary containing the IAM policy bindings. 
-                Example format: {'bindings': [{'role': '...', 'members': [...]}]}.
-                Returns {'bindings': []} if the request fails.
+            Dictionary containing IAM policy bindings in the format:
+            {'bindings': [{'role': 'roles/...', 'members': [...]}]}
         """
         if self._iam_policy_cache is not None:
             return self._iam_policy_cache
@@ -324,6 +432,14 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
             return {'bindings': []}
 
     def _list_service_account_keys(self, email: str) -> List:
+        """List all user-managed keys associated with a service account.
+        
+        Args:
+            email: Service account email address
+            
+        Returns:
+            List of service account key objects (may be empty on error)
+        """
         try:
             response = self.iam_client.list_service_account_keys(
                 request=iam_v1.ListServiceAccountKeysRequest(
@@ -337,6 +453,17 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
             return []
 
     def _find_resources_using_sa(self, email: str) -> List[str]:
+        """Discover GCP resources that reference or use this service account.
+        
+        Searches IAM policies across all resources in the project to find
+        bindings that include the service account.
+        
+        Args:
+            email: Service account email address
+            
+        Returns:
+            List of resource identifiers that reference this service account
+        """
         resources = []
         try:
             response = asset_v1.AssetServiceClient().search_all_iam_policies(
@@ -353,7 +480,15 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
 
     def _run_custom_analyzers(self, asset: asset_v1.ResourceSearchResult,
                               report: ResourceReport) -> None:
+        """Execute custom analysis logic and attach findings to the report.
+        
+        Processes any findings accumulated during analysis and adds them
+        to the resource report.
+        
+        Args:
+            asset: The GCP asset being analyzed
+            report: The resource report to update with findings
+        """
         for finding in self._pending_findings:
             report.add_finding(finding)
         self._pending_findings = []
-
