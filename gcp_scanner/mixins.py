@@ -23,10 +23,30 @@ class LoggingMixin:
         )
         return list(entries)
 
-    # FIX: שינוי שם מ-analyze_access_logs ל-get_access_logs_summary
-    # כך ה-base_scanner לא ירשום אותה אוטומטית (לא מתחילה ב-analyze_)
+
     def get_access_logs_summary(self, resource_name: str, days_back: int = 30) -> Dict:
-        """ניתוח לוגי גישה לפי שם משאב"""
+        """
+        Analyzes access logs for a specific resource and provides a summary report.
+
+        This method queries Cloud Logging for entries related to the given resource name,
+        extracts identity information from the proto_payload (Audit Logs), and 
+        aggregates statistics on user activity and operation types.
+
+        Args:
+            resource_name (str): The specific name of the resource to filter logs for.
+            days_back (int): The number of days from the current time to include in the search. 
+                            Defaults to 30.
+
+        Returns:
+            Dict: A dictionary containing:
+                - 'total_access' (int): Total number of log entries found.
+                - 'unique_users' (int): Count of distinct principal emails.
+                - 'users' (List[str]): List of all unique user emails who accessed the resource.
+                - 'operations' (Dict[str, int]): A mapping of operation names (e.g., 'GetStorage') 
+                                                to their occurrence count.
+                - 'first_access' (datetime|None): Timestamp of the earliest access in the period.
+                - 'last_access' (datetime|None): Timestamp of the most recent access in the period.
+        """
         filter_str = f'resource.labels.resource_name="{resource_name}"'
         entries = self.query_logs(filter_str, days_back)
 
@@ -61,17 +81,46 @@ class LoggingMixin:
 
 
 class MonitoringMixin:
-    """מיקסין לעבודה עם monitoring metrics"""
+    """
+    A Mixin to provide Google Cloud Monitoring (Stackdriver) metrics capabilities.
+
+    This mixin allows classes to fetch time-series data from Google Cloud Monitoring,
+    handling client initialization, time interval formatting, and data point extraction.
+
+    Attributes:
+        project_id (str): The Google Cloud Project ID.
+        project_name (str): The formatted project resource string (projects/project-id).
+        monitoring_client (monitoring_v3.MetricServiceClient): The initialized Monitoring client.
+    """
     project_id: str
     project_name: str
 
     def setup_monitoring_client(self):
+        """
+        Initializes the Metric Service Client and sets the project resource name.
+        """
         self.monitoring_client = monitoring_v3.MetricServiceClient()
         self.project_name = f"projects/{self.project_id}"
 
-    def get_metric(self, metric_type: str, filter_str: str = "",
-                   days_back: int = 7) -> List[MetricValue]:
-        """קבלת מטריקה"""
+    def get_metric(self, metric_type: str, filter_str: str = "", 
+                days_back: int = 7) -> List[MetricValue]:
+        """
+        Retrieves time-series metric data for a specific metric type.
+
+        Queries the Google Cloud Monitoring API for data points within a specified 
+        timeframe and parses them into a list of MetricValue objects.
+
+        Args:
+            metric_type (str): The type of metric to retrieve (e.g., 'run.googleapis.com/container/cpu/utilization').
+            filter_str (str, optional): Additional filtering criteria for the time-series. Defaults to "".
+            days_back (int, optional): Number of days of historical data to fetch. Defaults to 7.
+
+        Returns:
+            List[MetricValue]: A list of MetricValue objects containing the value, unit, and timestamp.
+
+        Raises:
+            GoogleCloudError: If the API request fails.
+        """
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=days_back)
 
@@ -107,19 +156,52 @@ class MonitoringMixin:
 
 
 class IamMixin:
-    """מיקסין לעבודה עם IAM"""
+    """
+    A Mixin to analyze and audit Identity and Access Management (IAM) policies.
+
+    This mixin provides tools to inspect IAM bindings for security risks, such as
+    publicly accessible resources or the use of overly privileged (dangerous) roles.
+
+    Attributes:
+        project_id (str): The Google Cloud Project ID.
+        resource_manager (resourcemanager_v3.ProjectsClient): Client for managing GCP resources.
+    """
     project_id: str
 
     def setup_iam_client(self):
+        """
+        Initializes the Resource Manager client to interact with GCP project settings.
+        """
         self.resource_manager = resourcemanager_v3.ProjectsClient()
 
     def get_iam_policy(self, resource: str) -> Dict:
+        """
+        Retrieves the IAM policy for a given resource.
+        
+        Note: Current implementation is a placeholder. 
+        Should be overridden or implemented to fetch actual policies.
+        """
         return {}
 
-    # FIX: שינוי שם מ-analyze_permissions ל-check_iam_permissions
-    # כך ה-base_scanner לא ירשום אותה אוטומטית (לא מתחילה ב-analyze_)
+
     def check_iam_permissions(self, iam_bindings: List[Any]) -> Dict:
-        """ניתוח הרשאות IAM — מקבל רשימת bindings, מחזיר ניתוח"""
+        """
+        Analyzes IAM bindings for security vulnerabilities.
+
+        Evaluates a list of IAM bindings to detect public exposure and 
+        high-privilege roles that may violate the principle of least privilege.
+
+        Args:
+            iam_bindings (List[Any]): A list of IAM binding objects or dictionaries, 
+                                    each containing a 'role' and 'members'.
+
+        Returns:
+            Dict: A summary of the security analysis containing:
+                - 'overly_permissive' (bool): True if dangerous roles are detected.
+                - 'public_access' (bool): True if the resource is exposed to the public.
+                - 'dangerous_roles' (List[Dict]): Details of found dangerous roles.
+                - 'findings' (List[Dict]): A descriptive list of all security issues found.
+        """
         result: Dict[str, Any] = {
             'overly_permissive': False,
             'public_access': False,
@@ -165,7 +247,17 @@ class IamMixin:
 
 
 class ComplianceMixin:
-    """מיקסין לבדיקות תאימות"""
+    """
+    A Mixin to audit cloud resources against industry compliance standards.
+
+    This mixin provides a framework for evaluating resources against predefined 
+    compliance frameworks such as HIPAA, PCI DSS, SOC2, and GDPR. It identifies 
+    missing security controls and generates detailed findings for remediation.
+
+    Attributes:
+        COMPLIANCE_STANDARDS (Dict[str, List[str]]): A mapping of compliance 
+            frameworks to their specific technical requirements.
+    """
 
     COMPLIANCE_STANDARDS = {
         'hipaa': ['encryption', 'audit_logs', 'access_controls'],
@@ -175,6 +267,16 @@ class ComplianceMixin:
     }
 
     def check_compliance(self, resource_data: Dict, standards: List[str]) -> List[Finding]:
+        """
+        Evaluates a resource against a list of selected compliance standards.
+
+        Args:
+            resource_data (Dict): The raw data/configuration of the cloud resource.
+            standards (List[str]): A list of standard keys to check (e.g., ['pci', 'gdpr']).
+
+        Returns:
+            List[Finding]: A list of compliance violation findings discovered during the audit.
+        """
         findings = []
         for standard in standards:
             if standard in self.COMPLIANCE_STANDARDS:
@@ -186,10 +288,31 @@ class ComplianceMixin:
         return findings
 
     def _check_requirement(self, resource_data: Dict, requirement: str) -> bool:
+        """
+        Internal logic to verify if a specific requirement is met by the resource.
+
+        Args:
+            resource_data (Dict): The resource configuration.
+            requirement (str): The specific control to verify (e.g., 'encryption').
+
+        Returns:
+            bool: True if compliant, False otherwise.
+        """
         return True
 
     def _create_compliance_finding(self, standard: str, requirement: str,
-                                   resource_data: Dict) -> Finding:
+                                    resource_data: Dict) -> Finding:
+        """
+        Constructs a detailed Finding object for a compliance violation.
+
+        Args:
+            standard (str): The compliance framework name.
+            requirement (str): The specific requirement that failed.
+            resource_data (Dict): The resource metadata.
+
+        Returns:
+            Finding: An object containing violation details, severity, and recommendations.
+        """
         return Finding(
             id=f"compliance_{standard}_{requirement}_{resource_data.get('id', 'unknown')}",
             type=FindingType.COMPLIANCE,
