@@ -36,11 +36,6 @@ def _get_email(asset: asset_v1.ResourceSearchResult) -> str:
     return _to_dict(attrs).get('email', '')
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  ServiceAccountKeyScanner — מטפל ב-ServiceAccountKey
-#  סקנר נפרד לגמרי — לו מבנה נתונים, שדות ולוגיקה שונים לחלוטין
-# ══════════════════════════════════════════════════════════════════════
-
 class ServiceAccountKeyScanner(BaseScanner, LoggingMixin, ComplianceMixin):
     """סקנר ל-Service Account Keys"""
 

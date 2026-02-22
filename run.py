@@ -10,7 +10,7 @@ from datetime import datetime
 from pprint import pprint
 
 from gcp_scanner.engine import ScanEngine
-from gcp_scanner.models import Severity, FindingType
+from gcp_scanner.models import ProjectSummary, Severity, FindingType
 
 def setup_logging():
     """הגדרת לוגינג מתקדם"""
@@ -23,7 +23,7 @@ def setup_logging():
         ]
     )
 
-def print_summary(summary):
+def print_summary(summary: ProjectSummary):
     """הדפסת סיכום יפה"""
     print("\n" + "="*70)
     print(f"{'SCAN SUMMARY':^70}")
@@ -120,10 +120,10 @@ def main():
     # שאילתות לדוגמה
     print(f"\n🔍 EXAMPLE QUERIES:")
     
-    critical_findings = engine.get_findings_by_severity('critical')
+    critical_findings = engine.get_findings_by_severity(Severity.CRITICAL)
     print(f"  • Critical findings: {len(critical_findings)}")
     
-    security_findings = engine.get_findings_by_type('security')
+    security_findings = engine.get_findings_by_type(FindingType.SECURITY)
     print(f"  • Security findings: {len(security_findings)}")
     
     print(f"\n{'='*70}")

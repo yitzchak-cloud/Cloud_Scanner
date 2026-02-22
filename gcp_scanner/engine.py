@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional, Type
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from datetime import datetime, timezone
 import logging
 import json
@@ -9,7 +9,7 @@ from google.cloud import asset_v1
 
 from gcp_scanner.base_scanner import BaseScanner
 from scanners.registry import get_default_scanner_classes
-from gcp_scanner.models import ProjectSummary, Finding
+from gcp_scanner.models import FindingType, ProjectSummary, Finding, ResourceReport, Severity
 
 class ScanEngine:
     """
@@ -25,7 +25,7 @@ class ScanEngine:
         self.scanners: List[BaseScanner] = []
         
         # תוצאות
-        self.results: Dict[str, Dict] = {}
+        self.results: Dict[str, Dict[str, ResourceReport]] = {}
         self.findings: List[Finding] = []
         
         # סטטיסטיקות
@@ -156,44 +156,61 @@ class ScanEngine:
         
         return summary
     
-    def _scan_sequential(self, resources_by_scanner: Dict):
-        """סריקה סדרתית"""
+
+    def _scan_sequential(self, resources_by_scanner: Dict['BaseScanner', List[Any]]):
+        """
+        Executes resource scanning sequentially (one by one).
+        
+        Args:
+            resources_by_scanner (Dict): A mapping of scanner objects to their list of resources.
+        """
         for scanner, resources in resources_by_scanner.items():
             if resources:
                 self.logger.info(f"Scanning {len(resources)} resources with {scanner.name}")
+                
                 results = scanner.scan_resources(resources)
                 self.results[scanner.name] = results
                 
-                # איסוף סטטיסטיקות סקנר
+                # Collect and log scanner statistics
                 scanner_stats = scanner.get_stats()
                 self.logger.info(f"{scanner.name} stats: {scanner_stats}")
-    
-    def _scan_parallel(self, resources_by_scanner: Dict, max_workers: int):
-        """סריקה במקביל"""
+
+    def _scan_parallel(self, resources_by_scanner: Dict['BaseScanner', List[Any]], max_workers: int):
+        """
+        Executes resource scanning in parallel using a thread pool.
+        """
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_scanner = {}
             
+            # התיקון כאן: זה מילון שהמפתח שלו הוא Future והערך הוא ה-Scanner
+            # ה-Future עצמו מחזיר Dict[str, ResourceReport] בסיום
+            future_to_scanner: Dict[Future[Dict[str, 'ResourceReport']], 'BaseScanner'] = {}
+
             for scanner, resources in resources_by_scanner.items():
                 if resources:
                     self.logger.info(f"Submitting {len(resources)} resources to {scanner.name}")
+
+                    # executor.submit מחזיר Future
                     future = executor.submit(scanner.scan_resources, resources)
                     future_to_scanner[future] = scanner
-            
+
             for future in as_completed(future_to_scanner):
                 scanner = future_to_scanner[future]
                 try:
+
                     results = future.result()
                     self.results[scanner.name] = results
-                    
-                    # איסוף סטטיסטיקות
+
                     scanner_stats = scanner.get_stats()
-                    self.logger.info(f"{scanner.name} completed: {scanner_stats}")
-                    
+                    self.logger.info(f"{scanner.name} completed successfully: {scanner_stats}")
+
                 except Exception as e:
-                    self.logger.error(f"{scanner.name} failed: {e}")
-                    self.results[scanner.name] = {'error': str(e)}
+                    # We log the error normally
+                    self.logger.error(f"Scanner '{scanner.name}' failed with error: {str(e)}")
+                    
+                    error_result: Dict[str, Any] = {'error': str(e)}
+                    self.results[scanner.name] = error_result 
     
-    def get_findings_by_severity(self, severity: str) -> List[Finding]:
+    def get_findings_by_severity(self, severity: Severity) -> List[Finding]:
         """קבלת ממצאים לפי חומרה"""
         findings = []
         for scanner_results in self.results.values():
@@ -204,7 +221,7 @@ class ScanEngine:
                                     if f.severity.value == severity])
         return findings
     
-    def get_findings_by_type(self, finding_type: str) -> List[Finding]:
+    def get_findings_by_type(self, finding_type: FindingType) -> List[Finding]:
         """קבלת ממצאים לפי סוג"""
         findings = []
         for scanner_results in self.results.values():
