@@ -112,48 +112,95 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
                        metadata: ResourceMetadata) -> AccessInfo:
         """Analyze access controls and permissions for a service account.
         
-        Examines IAM policies to determine who can impersonate or use the service account,
-        identifies public access patterns, and extracts role assignments.
+        Examines the project-level IAM policy to determine which roles are granted
+        to the service account. Filters out deleted principals and identifies whether
+        any bindings expose the project to public access via 'allUsers' or
+        'allAuthenticatedUsers'. Builds a clean AccessInfo object scoped only to
+        the given service account.
         
         Args:
-            asset: The GCP asset representing the service account
-            metadata: Pre-extracted resource metadata for context
-            
+            asset (asset_v1.ResourceSearchResult): The GCP asset representing the 
+                service account, used to extract the account email via _get_email().
+            metadata (ResourceMetadata): Pre-extracted resource metadata providing
+                additional context such as resource_id and resource_type.
+                
         Returns:
-            AccessInfo object containing principals, roles, and public access status
+            AccessInfo: An object containing:
+                - principals (List[str]): List with the service account member string
+                  in the format 'serviceAccount:<email>'.
+                - roles (List[str]): All IAM roles granted to this service account
+                  at the project level (e.g. 'roles/cloudsql.client').
+                - is_public (bool): True if the project policy contains 'allUsers'
+                  or 'allAuthenticatedUsers' in any binding.
+                - public_principals (List[str]): The specific public principals found
+                  ('allUsers' and/or 'allAuthenticatedUsers') if is_public is True.
+                - permissions (List): Empty list, reserved for future use.
+                - conditions (List): Empty list, reserved for future use.
         """
         email = _get_email(asset)
         access_info = AccessInfo()
         try:
             policy = self._get_project_iam_policy()
             member = f'serviceAccount:{email}'
+            
             for binding in policy.get('bindings', []):
-                if member in binding.get('members', []):
-                    access_info.roles.append(binding['role'])
-            access_info.principals = [member]
-            if 'allUsers' in access_info.principals or 'allAuthenticatedUsers' in access_info.principals:
-                access_info.is_public = True
-                access_info.public_principals = [
-                    p for p in access_info.principals
-                    if p in ['allUsers', 'allAuthenticatedUsers']
+                members = [
+                    m for m in binding.get('members', [])
+                    if not m.startswith('deleted:')
                 ]
+                if member in members:
+                    access_info.roles.append(binding['role'])
+            
+            access_info.principals = [member]
+            
+            all_members = []
+            for binding in policy.get('bindings', []):
+                all_members.extend(binding.get('members', []))
+            
+            public_members = {'allUsers', 'allAuthenticatedUsers'}
+            public_found = public_members.intersection(set(all_members))
+            if public_found:
+                access_info.is_public = True
+                access_info.public_principals = list(public_found)
+    
         except Exception as e:
             self.logger.error(f"Error analyzing access for {email}: {e}")
         return access_info
-
+    
+    
     def analyze_usage(self, asset: asset_v1.ResourceSearchResult,
                       metadata: ResourceMetadata) -> UsageInfo:
-        """Analyze usage patterns and metrics for a service account.
+        """Analyze usage patterns and activity metrics for a service account.
         
-        Queries Cloud Logging for activity history, computes access frequencies,
-        identifies unique users, and retrieves relevant monitoring metrics.
+        Queries Cloud Logging for all audit log entries where the service account
+        was the authenticated principal over the past 90 days. Aggregates timestamps,
+        unique callers, and method names to produce access frequency metrics across
+        multiple time windows. Also discovers which GCP resources reference this
+        service account, and fetches key validation metrics from Cloud Monitoring.
         
         Args:
-            asset: The GCP asset representing the service account
-            metadata: Pre-extracted resource metadata for context
-            
+            asset (asset_v1.ResourceSearchResult): The GCP asset representing the
+                service account, used to extract the account email via _get_email().
+            metadata (ResourceMetadata): Pre-extracted resource metadata providing
+                additional context such as resource_id and resource_type.
+                
         Returns:
-            UsageInfo object with access patterns, operation counters, and metrics
+            UsageInfo: An object containing:
+                - last_access (datetime | None): UTC timestamp of the most recent
+                  log entry found, or None if no logs exist.
+                - access_count_7d (int): Number of log entries in the last 7 days.
+                - access_count_30d (int): Number of log entries in the last 30 days.
+                - access_count_90d (int): Total number of log entries in the last 90 days.
+                - unique_users_7d (int): Number of distinct principal emails found
+                  across all log entries (approximated over the full 90d window).
+                - operations (Counter): Frequency map of methodName values seen in
+                  the audit logs (e.g. {'storage.objects.get': 42}).
+                - accessed_by (List[str]): List of unique principal emails that
+                  authenticated as or acted on behalf of this service account.
+                - used_by_resources (List[str]): GCP resource names that reference
+                  this service account, as returned by _find_resources_using_sa().
+                - metrics (dict): Cloud Monitoring metric snapshots, currently includes
+                  'key_validation_count' (latest value over 7 days) if available.
         """
         email = _get_email(asset)
         usage_info = UsageInfo()
@@ -165,7 +212,7 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
             timestamps = []
             users: set = set()
             operations: List[str] = []
-
+    
             for entry in logs:
                 ts = entry.timestamp
                 if hasattr(ts, 'seconds'):
@@ -173,25 +220,30 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
                 elif ts and getattr(ts, 'tzinfo', None) is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 timestamps.append(ts)
+                
                 if hasattr(entry, 'proto_payload'):
                     proto = _to_dict(entry.proto_payload)
                     operations.append(proto.get('methodName', 'unknown'))
                     auth_info = proto.get('authenticationInfo', {})
                     if auth_info.get('principalEmail'):
                         users.add(auth_info['principalEmail'])
-
+    
             if timestamps:
                 now = datetime.now(timezone.utc)
                 usage_info.last_access = max(timestamps)
                 usage_info.access_count_90d = len(timestamps)
                 usage_info.accessed_by = list(users)
                 usage_info.operations = Counter(operations)
-                usage_info.access_count_7d = sum(1 for t in timestamps if t > now - timedelta(days=7))
-                usage_info.access_count_30d = sum(1 for t in timestamps if t > now - timedelta(days=30))
+                usage_info.access_count_7d = sum(
+                    1 for t in timestamps if t > now - timedelta(days=7)
+                )
+                usage_info.access_count_30d = sum(
+                    1 for t in timestamps if t > now - timedelta(days=30)
+                )
                 usage_info.unique_users_7d = len(users)
-
+    
             usage_info.used_by_resources = self._find_resources_using_sa(email)
-
+    
             try:
                 metrics = self.get_metric(
                     'iam.googleapis.com/service_account/key_validation_count',
@@ -202,56 +254,87 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
                     usage_info.metrics['key_validation_count'] = metrics[-1]
             except Exception:
                 pass
-
+            
         except Exception as e:
             self.logger.error(f"Error analyzing usage for {email}: {e}")
         return usage_info
-
+    
+    
     def analyze_security(self, asset: asset_v1.ResourceSearchResult,
                          metadata: ResourceMetadata) -> SecurityInfo:
-        """Evaluate security posture of a service account.
+        """Evaluate the security posture of a service account.
         
-        Analyzes IAM bindings for overly permissive roles, detects public exposure,
-        enumerates service account keys, and generates security findings.
+        Retrieves the project-level IAM policy and extracts only the bindings
+        relevant to this service account, stripping out deleted principals and
+        other members to produce a clean, minimal binding list. Delegates permission
+        risk evaluation to check_iam_permissions(), enumerates any user-managed keys,
+        and emits high-severity findings for any dangerous roles detected.
         
         Args:
-            asset: The GCP asset representing the service account
-            metadata: Pre-extracted resource metadata for context
-            
+            asset (asset_v1.ResourceSearchResult): The GCP asset representing the
+                service account, used to extract the account email via _get_email().
+            metadata (ResourceMetadata): Pre-extracted resource metadata used to
+                populate finding fields such as resource_id and resource_type.
+                
         Returns:
-            SecurityInfo object with IAM bindings, permission analysis, and findings
+            SecurityInfo: An object containing:
+                - iam_bindings (List[dict]): Simplified list of IAM bindings scoped
+                  to this service account. Each entry contains:
+                    - 'role' (str): The IAM role name (e.g. 'roles/editor').
+                    - 'condition' (dict, optional): Present only if a condition is
+                      attached to the binding.
+                - has_public_access (bool): True if check_iam_permissions() detects
+                  public access exposure for this account.
+                - overly_permissive (bool): True if the account holds roles deemed
+                  excessively privileged by check_iam_permissions().
+                - overly_permissive_findings (List[str]): Human-readable descriptions
+                  of permissiveness issues, including key count if user-managed keys
+                  exist (e.g. 'Has 3 keys').
+                - encryption_at_rest (bool): Always False; not evaluated for SAs.
+                - encryption_in_transit (bool): Always False; not evaluated for SAs.
+                - authentication_required (bool): Always True for service accounts.
+                - shielded_vm (bool): Always False; not applicable to SAs.
+                - confidential_computing (bool): Always False; not applicable to SAs.
+        
+        Side effects:
+            Appends one Finding per dangerous role to self._pending_findings with
+            severity HIGH and type SECURITY, including the role name and resource
+            context in the finding metadata.
         """
         email = _get_email(asset)
         security_info = SecurityInfo()
         try:
             policy = self._get_project_iam_policy()
             member = f'serviceAccount:{email}'
-            iam_bindings = [
-                b for b in policy.get('bindings', [])
-                if member in b.get('members', [])
-            ]
+    
+            iam_bindings = []
+            for b in policy.get('bindings', []):
+                members = [
+                    m for m in b.get('members', [])
+                    if not m.startswith('deleted:')
+                ]
+                if member in members:
+                    binding_entry = {'role': b['role']}
+                    if b.get('condition'):
+                        binding_entry['condition'] = b['condition']
+                    iam_bindings.append(binding_entry)
+    
             security_info.iam_bindings = iam_bindings
-
+    
             perm_analysis = self.check_iam_permissions(iam_bindings)
             security_info.overly_permissive = perm_analysis['overly_permissive']
             security_info.has_public_access = perm_analysis['public_access']
-
+    
             keys = self._list_service_account_keys(email)
             if keys:
                 security_info.overly_permissive_findings.append(f"Has {len(keys)} keys")
-
-            access_info = AccessInfo()
-            for b in iam_bindings:
-                access_info.roles.append(b['role'])
-            access_info.principals = [member]
-            access_info.is_public = security_info.has_public_access
-            security_info.access_info = access_info
-
+    
             if security_info.overly_permissive:
                 for dangerous in perm_analysis.get('dangerous_roles', []):
                     self._pending_findings.append(Finding(
                         id=f"sa_dangerous_role_{metadata.resource_id}",
-                        type=FindingType.SECURITY, severity=Severity.HIGH,
+                        type=FindingType.SECURITY,
+                        severity=Severity.HIGH,
                         title="Service Account has dangerous role",
                         description=f"SA has role {dangerous['role']}",
                         recommendation="Remove unnecessary permissions",
@@ -259,12 +342,13 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
                         resource_type=metadata.resource_type,
                         metadata=dangerous
                     ))
+    
         except Exception as e:
             self.logger.error(f"Error analyzing security for {email}: {e}")
         return security_info
 
     def analyze_health(self, asset: asset_v1.ResourceSearchResult,
-                       metadata: ResourceMetadata) -> HealthInfo:
+                    metadata: ResourceMetadata) -> HealthInfo:
         """Assess the health and operational status of a service account.
         
         Evaluates age, usage patterns, key expiration, and generates warnings
@@ -352,7 +436,7 @@ class ServiceAccountScanner(BaseScanner, LoggingMixin, MonitoringMixin, IamMixin
         return health_info
 
     def analyze_compliance(self, asset: asset_v1.ResourceSearchResult,
-                           metadata: ResourceMetadata) -> ComplianceInfo:
+                        metadata: ResourceMetadata) -> ComplianceInfo:
         """Evaluate compliance posture against industry standards.
         
         Checks the service account against common compliance frameworks

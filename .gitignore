@@ -49,7 +49,7 @@ service-account-file.json
 # --- Logging & Data ---
 *.log
 results/
-export/
+# export/
 *.json_results
 .cache/
 

@@ -1,3 +1,4 @@
 google-cloud-monitoring
 google-cloud-resource-manager
-google-cloud-iam
+google-cloud-
+google-cloud-artifact-registry
